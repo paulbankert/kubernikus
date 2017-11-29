@@ -28,6 +28,7 @@ import (
 	"github.com/sapcc/kubernikus/pkg/client/openstack"
 	"github.com/sapcc/kubernikus/pkg/controller/config"
 	"github.com/sapcc/kubernikus/pkg/controller/launch"
+	"github.com/sapcc/kubernikus/pkg/controller/walle"
 	kubernikus_clientset "github.com/sapcc/kubernikus/pkg/generated/clientset"
 	kubernikus_informers "github.com/sapcc/kubernikus/pkg/generated/informers/externalversions"
 	kubernikus_informers_v1 "github.com/sapcc/kubernikus/pkg/generated/informers/externalversions/kubernikus/v1"
@@ -72,6 +73,7 @@ var (
 		"groundctl":         10,
 		"launchctl":         DEFAULT_WORKERS,
 		"wormholegenerator": DEFAULT_WORKERS,
+		"walle":             DEFAULT_WORKERS,
 	}
 )
 
@@ -162,6 +164,8 @@ func NewKubernikusOperator(options *KubernikusOperatorOptions, logger log.Logger
 			o.Config.Kubernikus.Controllers["groundctl"] = NewGroundController(o.Factories, o.Clients, recorder, o.Config)
 		case "launchctl":
 			o.Config.Kubernikus.Controllers["launchctl"] = launch.NewController(o.Factories, o.Clients, recorder, logger)
+		case "walle":
+			o.Config.Kubernikus.Controllers["walle"] = walle.NewController(o.Factories, o.Clients, recorder, logger)
 		}
 	}
 
