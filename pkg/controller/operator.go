@@ -165,7 +165,7 @@ func NewKubernikusOperator(options *KubernikusOperatorOptions, logger log.Logger
 		case "launchctl":
 			o.Config.Kubernikus.Controllers["launchctl"] = launch.NewController(o.Factories, o.Clients, recorder, logger)
 		case "walle":
-			o.Config.Kubernikus.Controllers["walle"] = walle.NewController(o.Factories, o.Clients, recorder, logger)
+			o.Config.Kubernikus.Controllers["walle"] = walle.NewController(o.Factories, o.Clients, logger)
 		}
 	}
 
