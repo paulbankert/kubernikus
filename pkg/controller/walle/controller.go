@@ -186,11 +186,11 @@ func (wr *WalleController) Reconcile(kluster *v1.Kluster) (bool, error) {
 		return true, err
 	}
 
-	if err := wr.watchNodesForKluster(kluster); err != nil {
+	if err := wr.cleanUpInformers(); err != nil {
 		return true, err
 	}
 
-	if err := wr.cleanUpInformers(); err != nil {
+	if err := wr.watchNodesForKluster(kluster); err != nil {
 		return true, err
 	}
 
