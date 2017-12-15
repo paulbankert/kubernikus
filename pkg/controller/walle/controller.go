@@ -24,6 +24,7 @@ const (
 )
 
 type WalleController struct {
+	Controller
 	//Controller
 	config.Factories
 	config.Clients
@@ -32,7 +33,6 @@ type WalleController struct {
 	nodeInformerMap sync.Map
 	stopCh          <-chan struct{}
 	informerWg      *sync.WaitGroup
-	stopChannelList []<-chan struct{}
 }
 
 func NewController(factories config.Factories, clients config.Clients, logger log.Logger) *WalleController {
@@ -55,10 +55,6 @@ func NewController(factories config.Factories, clients config.Clients, logger lo
 	})
 
 	return controller
-}
-
-func (wr *WalleController) TearDown() {
-
 }
 
 func (wr *WalleController) Run(threadiness int, stopCh <-chan struct{}, wg *sync.WaitGroup) {
@@ -220,7 +216,7 @@ func (wr *WalleController) createNodeInformerForKluster(kluster *v1.Kluster) err
 	}
 
 	_, exists := wr.nodeInformerMap.Load(key)
-	stopCh := make(<-chan struct{})
+	stopCh := make(chan struct{})
 	if !exists {
 		nodeInformer, err := NewNodeInformerForKluster(wr.Clients.Satellites, kluster, stopCh)
 		if err != nil {
@@ -257,13 +253,13 @@ func (wr *WalleController) watchNodesForKluster(kluster *v1.Kluster) error {
 		return fmt.Errorf("no node informer created for kluster %s/%s", kluster.GetNamespace(), kluster.GetName())
 	}
 
-	informer := i.(NodeInformer)
+	informer := i.(*NodeInformer)
 	cache.WaitForCacheSync(
 		wr.stopCh,
 		informer.HasSynced,
 	)
 
-	go func(informer NodeInformer) {
+	go func(informer *NodeInformer) {
 		wr.informerWg.Add(1)
 		defer wr.informerWg.Done()
 		for {
@@ -288,7 +284,7 @@ func (wr *WalleController) klusterAddFunc(obj interface{}) {
 }
 
 func (wr *WalleController) klusterUpdateFunc(cur, old interface{}) {
-	key, err := cache.MetaNamespaceKeyFunc(new)
+	key, err := cache.MetaNamespaceKeyFunc(cur)
 	if err == nil {
 		wr.queue.Add(key)
 	}

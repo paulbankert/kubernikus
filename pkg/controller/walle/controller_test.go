@@ -149,7 +149,9 @@ func TestCreateWatcherForNodeInKluster(t *testing.T) {
 		t.Errorf("could'nt find any watcher for kluster %s", key)
 	}
 
-	informer := i.(NodeInformer)
+	informer := i.(*NodeInformer)
 	assert.NotNil(t, informer)
+
+	assert.Equal(t, informer.GetKluster(), kluster)
 
 }
