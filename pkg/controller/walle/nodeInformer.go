@@ -20,6 +20,7 @@ const (
 )
 
 type NodeInformer struct {
+	Informer
 	cache.SharedIndexInformer
 
 	kluster *v1.Kluster

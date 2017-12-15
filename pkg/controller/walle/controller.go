@@ -13,6 +13,8 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 
+	api_v1 "k8s.io/client-go/pkg/api/v1"
+
 	"github.com/sapcc/kubernikus/pkg/apis/kubernikus/v1"
 	"github.com/sapcc/kubernikus/pkg/controller/config"
 )
@@ -25,7 +27,6 @@ const (
 
 type WalleController struct {
 	Controller
-	//Controller
 	config.Factories
 	config.Clients
 	queue           workqueue.RateLimitingInterface
@@ -216,17 +217,22 @@ func (wr *WalleController) createNodeInformerForKluster(kluster *v1.Kluster) err
 	}
 
 	_, exists := wr.nodeInformerMap.Load(key)
-	stopCh := make(chan struct{})
 	if !exists {
-		nodeInformer, err := NewNodeInformerForKluster(wr.Clients.Satellites, kluster, stopCh)
+		nodeInformer, err := NewNodeInformerForKluster(wr.Clients.Satellites, kluster, make(chan struct{}))
 		if err != nil {
 			return err
 		}
 
 		nodeInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-			AddFunc:    wr.nodeAddFunc,
-			UpdateFunc: wr.nodeUpdateFunc,
-			DeleteFunc: wr.nodeDeleteFunc,
+			AddFunc: func(obj interface{}) {
+				wr.logger.Log("added node %s", obj.(*api_v1.Node).GetName())
+			},
+			UpdateFunc: func(oldObj, newObj interface{}) {
+				wr.logger.Log("updated node %s", oldObj.(*api_v1.Node).GetName())
+			},
+			DeleteFunc: func(obj interface{}) {
+				wr.logger.Log("deleted node %s", obj.(*api_v1.Node).GetName())
+			},
 		})
 
 		key, err := nodeInformer.Key()
@@ -297,6 +303,7 @@ func (wr *WalleController) klusterDeleteFunc(obj interface{}) {
 	}
 	obj, exists, _ := wr.Factories.Kubernikus.Kubernikus().V1().Klusters().Informer().GetIndexer().GetByKey(key)
 	if exists {
+		obj.(*NodeInformer).Close()
 		wr.nodeInformerMap.Delete(key)
 	}
 }
@@ -311,16 +318,4 @@ func (wr *WalleController) GetNodeInformerForKluster(kluster *v1.Kluster) (NodeI
 		return NodeInformer{}, fmt.Errorf("no node informers found for kluster %s/%s", kluster.GetNamespace(), kluster.GetName())
 	}
 	return i.(NodeInformer), nil
-}
-
-func (wr *WalleController) nodeAddFunc(obj interface{}) {
-	//TODO
-}
-
-func (wr *WalleController) nodeUpdateFunc(cur, old interface{}) {
-	//TODO
-}
-
-func (wr *WalleController) nodeDeleteFunc(obj interface{}) {
-	//TODO
 }
