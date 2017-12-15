@@ -1,14 +1,13 @@
 package walle
 
 import (
-	"sync"
 	"testing"
 	"time"
 
 	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes/fake"
 	api_v1 "k8s.io/client-go/pkg/api/v1"
+	"k8s.io/client-go/tools/cache"
 
 	"github.com/stretchr/testify/assert"
 
@@ -26,7 +25,7 @@ const (
 	Reconciliation   = 1 * time.Minute
 )
 
-func createFakeWalleReconciler() WalleReconciler {
+func createFakeWalleController() WalleController {
 	kluster := &v1.Kluster{
 		ObjectMeta: meta_v1.ObjectMeta{
 			Namespace: KlusterNamespace,
@@ -114,7 +113,7 @@ g1GGPll8zndfDTDecJrHjV4G7Bj+QVGuArVG0dAF6Gk3lEzS9AVb
 	fakeKubernikusClientset := kubernikusfake.NewSimpleClientset(kluster)
 	kubernikusInformerFactory := kubernikus_informers.NewSharedInformerFactory(fakeKubernikusClientset, Reconciliation)
 
-	return WalleReconciler{
+	return WalleController{
 		Clients: config.Clients{
 			Kubernetes: fakeKubernetesClientset,
 			Kubernikus: fakeKubernikusClientset,
@@ -123,12 +122,11 @@ g1GGPll8zndfDTDecJrHjV4G7Bj+QVGuArVG0dAF6Gk3lEzS9AVb
 				kubernikusInformerFactory.Kubernikus().V1().Klusters().Informer(),
 			),
 		},
-		nodeWatcherMap: sync.Map{},
 	}
 }
 
 func TestCreateWatcherForNodeInKluster(t *testing.T) {
-	walle := createFakeWalleReconciler()
+	walle := createFakeWalleController()
 
 	kluster := &v1.Kluster{
 		ObjectMeta: meta_v1.ObjectMeta{
@@ -137,17 +135,21 @@ func TestCreateWatcherForNodeInKluster(t *testing.T) {
 		},
 	}
 
-	_, err := walle.createNodeWatcherForKluster(kluster)
+	if err := walle.createNodeInformerForKluster(kluster); err != nil {
+		t.Error(err)
+	}
+
+	key, err := cache.MetaNamespaceKeyFunc(kluster)
 	if err != nil {
 		t.Error(err)
 	}
 
-	nm, ok := walle.nodeWatcherMap.Load(kluster.GetName())
+	i, ok := walle.nodeInformerMap.Load(key)
 	if !ok {
-		t.Errorf("could'nt find any watcher for kluster %s", kluster.GetName())
+		t.Errorf("could'nt find any watcher for kluster %s", key)
 	}
 
-	nodeName, watcher := nm.(map[string]watch.Interface)
-	assert.NotEmpty(t, nodeName)
-	assert.NotNil(t, watcher)
+	informer := i.(NodeInformer)
+	assert.NotNil(t, informer)
+
 }

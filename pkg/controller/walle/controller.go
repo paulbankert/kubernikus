@@ -1,20 +1,15 @@
 package walle
 
 import (
-	"context"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/go-kit/kit/log"
 	"k8s.io/apimachinery/pkg/api/errors"
-	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/apimachinery/pkg/watch"
-	api_v1 "k8s.io/client-go/pkg/api/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 
@@ -26,7 +21,6 @@ const (
 	BaseDelay              = 5 * time.Second
 	MaxDelay               = 300 * time.Second
 	KlusterRecheckInterval = 5 * time.Minute
-	NodeResyncPeriod       = 5 * time.Minute
 )
 
 type WalleController struct {
@@ -37,6 +31,8 @@ type WalleController struct {
 	logger          log.Logger
 	nodeInformerMap sync.Map
 	stopCh          <-chan struct{}
+	informerWg      *sync.WaitGroup
+	stopChannelList []<-chan struct{}
 }
 
 func NewController(factories config.Factories, clients config.Clients, logger log.Logger) *WalleController {
@@ -61,13 +57,19 @@ func NewController(factories config.Factories, clients config.Clients, logger lo
 	return controller
 }
 
+func (wr *WalleController) TearDown() {
+
+}
+
 func (wr *WalleController) Run(threadiness int, stopCh <-chan struct{}, wg *sync.WaitGroup) {
 	wr.logger.Log(
 		"msg", "starting run loop",
 		"threadiness", threadiness,
 		"v", 2,
 	)
+
 	wr.stopCh = stopCh
+	wr.informerWg = wg
 
 	defer wr.queue.ShutDown()
 	defer wg.Done()
@@ -192,29 +194,38 @@ func (wr *WalleController) Reconcile(kluster *v1.Kluster) (bool, error) {
 		return true, err
 	}
 
+	if err := wr.cleanUpInformers(); err != nil {
+		return true, err
+	}
+
 	return false, nil
 }
 
+func (wr *WalleController) cleanUpInformers() error {
+	wr.nodeInformerMap.Range(
+		func(key, value interface{}) bool {
+			if _, exists, _ := wr.Factories.Kubernikus.Kubernikus().V1().Klusters().Informer().GetIndexer().GetByKey(key.(string)); !exists {
+				wr.nodeInformerMap.Delete(key)
+			}
+			return true
+		},
+	)
+	return nil
+}
+
 func (wr *WalleController) createNodeInformerForKluster(kluster *v1.Kluster) error {
-	_, isFound := wr.nodeInformerMap.Load(klusterKey(kluster))
-	if !isFound {
-		client, err := wr.Clients.Satellites.ClientFor(kluster)
+	key, err := cache.MetaNamespaceKeyFunc(kluster)
+	if err != nil {
+		return err
+	}
+
+	_, exists := wr.nodeInformerMap.Load(key)
+	stopCh := make(<-chan struct{})
+	if !exists {
+		nodeInformer, err := NewNodeInformerForKluster(wr.Clients.Satellites, kluster, stopCh)
 		if err != nil {
 			return err
 		}
-		nodeInformer := cache.NewSharedIndexInformer(
-			&cache.ListWatch{
-				ListFunc: func(options meta_v1.ListOptions) (runtime.Object, error) {
-					return client.CoreV1().Nodes().List(meta_v1.ListOptions{})
-				},
-				WatchFunc: func(options meta_v1.ListOptions) (watch.Interface, error) {
-					return client.CoreV1().Nodes().Watch(meta_v1.ListOptions{})
-				},
-			},
-			&api_v1.Node{},
-			NodeResyncPeriod,
-			cache.Indexers{},
-		)
 
 		nodeInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 			AddFunc:    wr.nodeAddFunc,
@@ -222,8 +233,13 @@ func (wr *WalleController) createNodeInformerForKluster(kluster *v1.Kluster) err
 			DeleteFunc: wr.nodeDeleteFunc,
 		})
 
+		key, err := nodeInformer.Key()
+		if err != nil {
+			return err
+		}
+
 		wr.nodeInformerMap.Store(
-			klusterKey(kluster),
+			key,
 			nodeInformer,
 		)
 	}
@@ -231,21 +247,35 @@ func (wr *WalleController) createNodeInformerForKluster(kluster *v1.Kluster) err
 }
 
 func (wr *WalleController) watchNodesForKluster(kluster *v1.Kluster) error {
+	key, err := cache.MetaNamespaceKeyFunc(kluster)
+	if err != nil {
+		return err
+	}
 
-	i, ok := wr.nodeInformerMap.Load(klusterKey(kluster))
+	i, ok := wr.nodeInformerMap.Load(key)
 	if !ok {
 		return fmt.Errorf("no node informer created for kluster %s/%s", kluster.GetNamespace(), kluster.GetName())
 	}
 
-	informer := i.(cache.SharedIndexInformer)
+	informer := i.(NodeInformer)
 	cache.WaitForCacheSync(
 		wr.stopCh,
 		informer.HasSynced,
 	)
 
-	go func(ctx context.Context, informer cache.SharedIndexInformer) {
-		informer.Run(wr.stopCh)
-	}(context.Background(), informer)
+	go func(informer NodeInformer) {
+		wr.informerWg.Add(1)
+		defer wr.informerWg.Done()
+		for {
+			select {
+			case <-wr.stopCh:
+				informer.Close()
+				return
+			default:
+				informer.Run()
+			}
+		}
+	}(informer)
 
 	return nil
 }
@@ -271,20 +301,20 @@ func (wr *WalleController) klusterDeleteFunc(obj interface{}) {
 	}
 	obj, exists, _ := wr.Factories.Kubernikus.Kubernikus().V1().Klusters().Informer().GetIndexer().GetByKey(key)
 	if exists {
-		wr.nodeInformerMap.Delete(klusterKey(obj.(*v1.Kluster)))
+		wr.nodeInformerMap.Delete(key)
 	}
 }
 
-func (wr *WalleController) GetNodeInformerMap() *sync.Map {
-	return &wr.nodeInformerMap
-}
-
-func (wr *WalleController) GetNodeInformerForKluster(kluster *v1.Kluster) (cache.SharedIndexInformer, error) {
-	i, isFound := wr.nodeInformerMap.Load(klusterKey(kluster))
+func (wr *WalleController) GetNodeInformerForKluster(kluster *v1.Kluster) (NodeInformer, error) {
+	key, err := cache.MetaNamespaceKeyFunc(kluster)
+	if err != nil {
+		return NodeInformer{}, err
+	}
+	i, isFound := wr.nodeInformerMap.Load(key)
 	if !isFound {
-		return nil, fmt.Errorf("no node informers found for kluster %s/%s", kluster.GetNamespace(), kluster.GetName())
+		return NodeInformer{}, fmt.Errorf("no node informers found for kluster %s/%s", kluster.GetNamespace(), kluster.GetName())
 	}
-	return i.(cache.SharedIndexInformer), nil
+	return i.(NodeInformer), nil
 }
 
 func (wr *WalleController) nodeAddFunc(obj interface{}) {
@@ -297,8 +327,4 @@ func (wr *WalleController) nodeUpdateFunc(cur, old interface{}) {
 
 func (wr *WalleController) nodeDeleteFunc(obj interface{}) {
 	//TODO
-}
-
-func klusterKey(kluster *v1.Kluster) string {
-	return fmt.Sprintf("%s/%s", kluster.GetNamespace(), kluster.GetName())
 }
